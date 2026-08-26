@@ -1,24 +1,23 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
-
+#include "nvs_pairing.h"
 // ============================================================
 // PACKET TYPES
 // ============================================================
 
-#define PAIR_REQUEST   1
-#define PAIR_RESPONSE  2
-#define PAIR_CONFIRM   3
+#define PAIR_REQUEST 1
+#define PAIR_RESPONSE 2
+#define PAIR_CONFIRM 3
 
 // ============================================================
 // BROADCAST MAC
 // ============================================================
 
 uint8_t broadcastAddress[] =
-{
-    0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF
-};
+    {
+        0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF};
 
 // ============================================================
 // PAIRING PACKET
@@ -93,8 +92,7 @@ bool addPeer(const uint8_t *mac)
     memcpy(
         peerInfo.peer_addr,
         mac,
-        6
-    );
+        6);
 
     peerInfo.channel = 0;
 
@@ -135,8 +133,7 @@ void sendPairResponse(const uint8_t *mac)
         esp_now_send(
             mac,
             (uint8_t *)&packet,
-            sizeof(packet)
-        );
+            sizeof(packet));
 
     if (result == ESP_OK)
     {
@@ -165,8 +162,7 @@ void sendPairConfirm()
         esp_now_send(
             peerMAC,
             (uint8_t *)&packet,
-            sizeof(packet)
-        );
+            sizeof(packet));
 
     if (result == ESP_OK)
     {
@@ -197,8 +193,7 @@ void sendPairRequest()
         esp_now_send(
             broadcastAddress,
             (uint8_t *)&packet,
-            sizeof(packet)
-        );
+            sizeof(packet));
 
     if (result == ESP_OK)
     {
@@ -208,6 +203,12 @@ void sendPairRequest()
     {
         Serial.println("PAIR_REQUEST failed");
     }
+}
+// chech mac address
+
+bool isSameMAC(const uint8_t *mac1, const uint8_t *mac2)
+{
+    return memcmp(mac1, mac2, 6) == 0;
 }
 
 // ============================================================
@@ -234,8 +235,7 @@ void OnDataRecv(
     memcpy(
         &packet,
         data,
-        sizeof(PairPacket)
-    );
+        sizeof(PairPacket));
 
     // ========================================================
     // PAIR REQUEST
@@ -260,13 +260,25 @@ void OnDataRecv(
 
         if (paired)
         {
-            Serial.println(
-                "Already paired - ignoring request"
-            );
+            if (isSameMAC(mac, peerMAC))
+            {
+                Serial.println("Known partner detected.");
+                Serial.println("Reconnection request accepted.");
 
-            return;
+                // Make sure peer exists
+                addPeer(peerMAC);
+
+                // Respond to known partner
+                sendPairResponse(peerMAC);
+
+                return;
+            }
+            else
+            {
+                Serial.println("Unknown device - ignoring request.");
+                return;
+            }
         }
-
         // ----------------------------------------------------
         // Save sender MAC
         // ----------------------------------------------------
@@ -274,8 +286,7 @@ void OnDataRecv(
         memcpy(
             peerMAC,
             mac,
-            6
-        );
+            6);
 
         Serial.print("Candidate peer: ");
 
@@ -290,8 +301,7 @@ void OnDataRecv(
         if (!addPeer(peerMAC))
         {
             Serial.println(
-                "Could not add candidate peer"
-            );
+                "Could not add candidate peer");
 
             return;
         }
@@ -329,8 +339,7 @@ void OnDataRecv(
         if (paired)
         {
             Serial.println(
-                "Already paired"
-            );
+                "Already paired");
 
             return;
         }
@@ -342,8 +351,7 @@ void OnDataRecv(
         memcpy(
             peerMAC,
             mac,
-            6
-        );
+            6);
 
         Serial.print("Peer MAC: ");
 
@@ -358,8 +366,7 @@ void OnDataRecv(
         if (!addPeer(peerMAC))
         {
             Serial.println(
-                "Failed to add peer"
-            );
+                "Failed to add peer");
 
             return;
         }
@@ -406,8 +413,7 @@ void OnDataRecv(
         if (paired)
         {
             Serial.println(
-                "Already paired"
-            );
+                "Already paired");
 
             return;
         }
@@ -419,8 +425,7 @@ void OnDataRecv(
         memcpy(
             peerMAC,
             mac,
-            6
-        );
+            6);
 
         // ----------------------------------------------------
         // Add peer
@@ -429,8 +434,7 @@ void OnDataRecv(
         if (!addPeer(peerMAC))
         {
             Serial.println(
-                "Failed to add peer"
-            );
+                "Failed to add peer");
 
             return;
         }
@@ -452,6 +456,49 @@ void OnDataRecv(
 
         Serial.println();
     }
+}
+bool loadSavedPair()
+{
+    uint8_t savedMAC[6];
+
+    if (loadPeerMAC(savedMAC))
+    {
+        memcpy(peerMAC, savedMAC, 6);
+
+        Serial.println();
+        Serial.println("==============================");
+        Serial.println("SAVED PEER FOUND");
+        Serial.println("==============================");
+
+        Serial.print("Peer MAC: ");
+        printMAC(peerMAC);
+        Serial.println();
+
+        // Add saved peer to ESP-NOW
+        if (!addPeer(peerMAC))
+        {
+            Serial.println("Failed to add saved peer");
+
+            paired = false;
+
+            return false;
+        }
+
+        paired = true;
+
+        Serial.println("Saved peer added to ESP-NOW");
+
+        return true;
+    }
+
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("NO SAVED PEER");
+    Serial.println("==============================");
+
+    paired = false;
+
+    return false;
 }
 
 // ============================================================
@@ -480,8 +527,7 @@ void setup()
     Serial.print("My MAC: ");
 
     Serial.println(
-        WiFi.macAddress()
-    );
+        WiFi.macAddress());
 
     // --------------------------------------------------------
     // ESP-NOW
@@ -490,27 +536,23 @@ void setup()
     if (esp_now_init() != ESP_OK)
     {
         Serial.println(
-            "ESP-NOW initialization FAILED"
-        );
+            "ESP-NOW initialization FAILED");
 
         return;
     }
 
     Serial.println(
-        "ESP-NOW initialized"
-    );
+        "ESP-NOW initialized");
 
     // --------------------------------------------------------
     // Callbacks
     // --------------------------------------------------------
 
     esp_now_register_send_cb(
-        OnDataSent
-    );
+        OnDataSent);
 
     esp_now_register_recv_cb(
-        OnDataRecv
-    );
+        OnDataRecv);
 
     // --------------------------------------------------------
     // Add broadcast peer
@@ -521,8 +563,7 @@ void setup()
     memcpy(
         broadcastPeer.peer_addr,
         broadcastAddress,
-        6
-    );
+        6);
 
     broadcastPeer.channel = 0;
 
@@ -531,20 +572,20 @@ void setup()
     if (esp_now_add_peer(&broadcastPeer) != ESP_OK)
     {
         Serial.println(
-            "Failed to add broadcast peer"
-        );
+            "Failed to add broadcast peer");
 
         return;
     }
 
     Serial.println(
-        "Broadcast peer added"
-    );
+        "Broadcast peer added");
 
     Serial.println();
     Serial.println(
-        "Waiting for another ESP32..."
-    );
+        "Waiting for another ESP32...");
+    Serial.println();
+    Serial.println("Checking saved pairing...");
+    loadSavedPair();
 }
 
 // ============================================================
@@ -581,20 +622,17 @@ void loop()
 
             Serial.println();
             Serial.println(
-                "NORMAL MODE"
-            );
+                "NORMAL MODE");
 
             Serial.print(
-                "Partner MAC: "
-            );
+                "Partner MAC: ");
 
             printMAC(peerMAC);
 
             Serial.println();
 
             Serial.println(
-                "Pairing stopped."
-            );
+                "Pairing stopped.");
         }
     }
 
