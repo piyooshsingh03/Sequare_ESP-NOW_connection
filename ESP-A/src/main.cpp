@@ -2,25 +2,63 @@
 #include <WiFi.h>
 #include <esp_now.h>
 
-// =====================================================
-// CHANGE ONLY THIS MAC ON EACH ESP32
-// =====================================================
+// ============================================================
+// ESP-NOW BROADCAST ADDRESS
+// ============================================================
 
-// On ESP-A -> put ESP-B MAC here
-// On ESP-B -> put ESP-A MAC here
-uint8_t peerMAC[] = {
-    0xBB, 0xBB, 0xBB,
-    0xBB, 0xBB, 0xBB
+uint8_t broadcastAddress[] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 };
 
+// ============================================================
+// VARIABLES
+// ============================================================
 
-// =====================================================
-// Receive callback
-// =====================================================
+bool peerFound = false;
+
+uint8_t peerMAC[6];
+
+unsigned long lastDiscoveryTime = 0;
+
+// ============================================================
+// PRINT MAC
+// ============================================================
+
+void printMAC(const uint8_t *mac)
+{
+    for (int i = 0; i < 6; i++)
+    {
+        if (i > 0)
+            Serial.print(":");
+
+        if (mac[i] < 0x10)
+            Serial.print("0");
+
+        Serial.print(mac[i], HEX);
+    }
+}
+
+// ============================================================
+// SEND CALLBACK
+// ============================================================
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
+{
+    Serial.print("Send status: ");
+
+    if (status == ESP_NOW_SEND_SUCCESS)
+        Serial.println("SUCCESS");
+    else
+        Serial.println("FAIL");
+}
+
+// ============================================================
+// RECEIVE CALLBACK
+// ============================================================
 
 void OnDataRecv(
     const uint8_t *mac,
-    const uint8_t *data,
+    const uint8_t *incomingData,
     int len)
 {
     Serial.println();
@@ -28,18 +66,7 @@ void OnDataRecv(
     Serial.println("DATA RECEIVED");
 
     Serial.print("From MAC: ");
-
-    for (int i = 0; i < 6; i++)
-    {
-        if (mac[i] < 0x10)
-            Serial.print("0");
-
-        Serial.print(mac[i], HEX);
-
-        if (i < 5)
-            Serial.print(":");
-    }
-
+    printMAC(mac);
     Serial.println();
 
     Serial.print("Length: ");
@@ -49,39 +76,103 @@ void OnDataRecv(
 
     for (int i = 0; i < len; i++)
     {
-        Serial.print((char)data[i]);
+        Serial.print((char)incomingData[i]);
     }
 
     Serial.println();
 
-    Serial.println("==============================");
+    // --------------------------------------------------------
+    // CHECK FOR DISCOVERY REQUEST
+    // --------------------------------------------------------
+
+    if (len == 11 &&
+        memcmp(incomingData, "PAIR_REQUEST", 11) == 0)
+    {
+        Serial.println("PAIR REQUEST RECEIVED");
+
+        // Save sender MAC
+        memcpy(peerMAC, mac, 6);
+
+        peerFound = true;
+
+        Serial.print("Discovered peer MAC: ");
+        printMAC(peerMAC);
+        Serial.println();
+
+        // ----------------------------------------------------
+        // SEND RESPONSE BACK
+        // ----------------------------------------------------
+
+        const char response[] = "PAIR_RESPONSE";
+
+        esp_err_t result = esp_now_send(
+            peerMAC,
+            (const uint8_t *)response,
+            sizeof(response) - 1
+        );
+
+        if (result == ESP_OK)
+        {
+            Serial.println("PAIR_RESPONSE sent");
+        }
+        else
+        {
+            Serial.println("PAIR_RESPONSE send failed");
+        }
+    }
+
+    // --------------------------------------------------------
+    // CHECK FOR DISCOVERY RESPONSE
+    // --------------------------------------------------------
+
+    if (len == 12 &&
+        memcmp(incomingData, "PAIR_RESPONSE", 12) == 0)
+    {
+        Serial.println("PAIR RESPONSE RECEIVED");
+
+        // Save sender MAC
+        memcpy(peerMAC, mac, 6);
+
+        peerFound = true;
+
+        Serial.print("Discovered peer MAC: ");
+        printMAC(peerMAC);
+        Serial.println();
+    }
 }
 
+// ============================================================
+// SEND DISCOVERY REQUEST
+// ============================================================
 
-// =====================================================
-// Send callback
-// =====================================================
-
-void OnDataSent(
-    const uint8_t *mac_addr,
-    esp_now_send_status_t status)
+void sendDiscoveryRequest()
 {
-    Serial.print("Send status: ");
+    const char request[] = "PAIR_REQUEST";
 
-    if (status == ESP_NOW_SEND_SUCCESS)
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("Sending discovery request...");
+    Serial.println("==============================");
+
+    esp_err_t result = esp_now_send(
+        broadcastAddress,
+        (const uint8_t *)request,
+        sizeof(request) - 1
+    );
+
+    if (result == ESP_OK)
     {
-        Serial.println("SUCCESS");
+        Serial.println("Discovery request sent");
     }
     else
     {
-        Serial.println("FAIL");
+        Serial.println("Discovery request failed");
     }
 }
 
-
-// =====================================================
-// Setup
-// =====================================================
+// ============================================================
+// SETUP
+// ============================================================
 
 void setup()
 {
@@ -91,98 +182,112 @@ void setup()
 
     Serial.println();
     Serial.println("==============================");
-    Serial.println("ESP-NOW BIDIRECTIONAL TEST");
+    Serial.println("ESP-NOW AUTO DISCOVERY");
     Serial.println("==============================");
 
-    // -------------------------------------------------
-    // WiFi
-    // -------------------------------------------------
+    // --------------------------------------------------------
+    // WiFi initialization
+    // --------------------------------------------------------
 
     WiFi.mode(WIFI_STA);
+
+    delay(100);
 
     Serial.print("My MAC: ");
     Serial.println(WiFi.macAddress());
 
-
-    // -------------------------------------------------
+    // --------------------------------------------------------
     // ESP-NOW initialization
-    // -------------------------------------------------
+    // --------------------------------------------------------
 
     if (esp_now_init() != ESP_OK)
     {
-        Serial.println("ERROR: ESP-NOW initialization failed");
+        Serial.println("ESP-NOW initialization FAILED");
         return;
     }
 
     Serial.println("ESP-NOW initialized");
 
-
-    // -------------------------------------------------
+    // --------------------------------------------------------
     // Register callbacks
-    // -------------------------------------------------
-
-    esp_now_register_recv_cb(OnDataRecv);
+    // --------------------------------------------------------
 
     esp_now_register_send_cb(OnDataSent);
 
+    esp_now_register_recv_cb(OnDataRecv);
 
-    // -------------------------------------------------
-    // Add peer
-    // -------------------------------------------------
+    // --------------------------------------------------------
+    // Add broadcast peer
+    // --------------------------------------------------------
 
     esp_now_peer_info_t peerInfo = {};
 
-    memcpy(peerInfo.peer_addr, peerMAC, 6);
+    memcpy(
+        peerInfo.peer_addr,
+        broadcastAddress,
+        6
+    );
 
     peerInfo.channel = 0;
+
     peerInfo.encrypt = false;
 
     if (esp_now_add_peer(&peerInfo) != ESP_OK)
     {
-        Serial.println("ERROR: Failed to add peer");
+        Serial.println("Failed to add broadcast peer");
         return;
     }
 
-    Serial.println("Peer added");
+    Serial.println("Broadcast peer added");
 
-    Serial.println("Ready!");
+    Serial.println();
+    Serial.println("Waiting for another ESP32...");
 }
 
-
-// =====================================================
-// Loop
-// =====================================================
+// ============================================================
+// LOOP
+// ============================================================
 
 void loop()
 {
-    static unsigned long lastSend = 0;
+    // --------------------------------------------------------
+    // If peer has NOT been discovered
+    // send discovery request every 2 seconds
+    // --------------------------------------------------------
 
-    if (millis() - lastSend >= 2000)
+    if (!peerFound)
     {
-        lastSend = millis();
-
-        char message[50];
-
-        snprintf(
-            message,
-            sizeof(message),
-            "Hello from %s",
-            WiFi.macAddress().c_str()
-        );
-
-        Serial.print("Sending: ");
-        Serial.println(message);
-
-        esp_err_t result = esp_now_send(
-            peerMAC,
-            (uint8_t *)message,
-            strlen(message)
-        );
-
-        if (result != ESP_OK)
+        if (millis() - lastDiscoveryTime >= 2000)
         {
-            Serial.print("Send error: ");
-            Serial.println(result);
+            lastDiscoveryTime = millis();
+
+            sendDiscoveryRequest();
         }
     }
+    else
+    {
+        // ----------------------------------------------------
+        // Peer discovered
+        // ----------------------------------------------------
+
+        static bool printed = false;
+
+        if (!printed)
+        {
+            printed = true;
+
+            Serial.println();
+            Serial.println("==============================");
+            Serial.println("PEER DISCOVERED");
+            Serial.println("==============================");
+
+            Serial.print("Peer MAC: ");
+            printMAC(peerMAC);
+            Serial.println();
+
+            Serial.println("Discovery complete.");
+        }
+    }
+
+    delay(10);
 }
